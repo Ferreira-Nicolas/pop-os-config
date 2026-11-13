@@ -15,6 +15,9 @@ from pathlib import Path
 
 import psutil
 
+from .gpu import detect_gpu, gpu_name
+from .sysfs import read_int, read_text
+
 HISTORY_SAMPLES = 90
 PROCESS_EVERY = 2  # amostras entre leituras da lista de processos
 SSID_EVERY = 15
@@ -27,21 +30,6 @@ BATTERY_STATUS = {
     "Full": "Carregada",
     "Not charging": "Conectada",
 }
-
-
-def read_text(path):
-    try:
-        return Path(path).read_text().strip()
-    except OSError:
-        return None
-
-
-def read_int(path):
-    text = read_text(path)
-    try:
-        return int(text)
-    except (TypeError, ValueError):
-        return None
 
 
 def parse_volume(output):
@@ -97,6 +85,7 @@ class Metrics:
 
         history = lambda: collections.deque(maxlen=HISTORY_SAMPLES)
         self.cpu_history = history()
+        self.gpu_history = history()
         self.temperature_history = history()
         self.download_history = history()
         self.upload_history = history()
@@ -105,6 +94,11 @@ class Metrics:
         self.cpu_threads = [0.0] * self.core_count
         self.cpu_frequency = None
         self.load = (0.0, 0.0, 0.0)
+        self.gpu = detect_gpu(self.sysfs)
+        self.gpu_name = (gpu_name() or "GPU") if self.gpu else None
+        self.gpu_percent = 0.0
+        self.gpu_frequency = None
+        self.gpu_max_frequency = None
         self.temperatures = []
         self.cpu_temperature = None
         self.fan_rpm = None
@@ -139,6 +133,7 @@ class Metrics:
         self.last_time = now
 
         self._sample_cpu()
+        self._sample_gpu(elapsed)
         self._sample_temperatures()
         self._sample_memory()
         self._sample_disks(elapsed)
@@ -156,6 +151,14 @@ class Metrics:
         frequency = psutil.cpu_freq()
         self.cpu_frequency = frequency.current / 1000 if frequency else None
         self.load = os.getloadavg()
+
+    def _sample_gpu(self, elapsed):
+        if self.gpu is None:
+            return
+        percent, self.gpu_frequency, self.gpu_max_frequency = self.gpu.read(elapsed)
+        if percent is not None:
+            self.gpu_percent = percent
+            self.gpu_history.append(percent)
 
     def _hwmon_sensors(self):
         """Devolve {nome do driver: [(rótulo, °C)]} e a primeira ventoinha."""

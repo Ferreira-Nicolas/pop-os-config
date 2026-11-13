@@ -272,6 +272,24 @@ def icon_cpu(canvas, color):
     context.stroke()
 
 
+def icon_gpu(canvas, color):
+    context = _stroke(canvas, color)
+    canvas.rounded(1, 3.5, 14, 9, 1.6)
+    context.stroke()
+    context.arc(5.8, 8, 2.2, 0, 2 * math.pi)
+    context.stroke()
+    context.move_to(10.5, 6)
+    context.line_to(12.8, 6)
+    context.move_to(10.5, 8)
+    context.line_to(12.8, 8)
+    context.move_to(10.5, 10)
+    context.line_to(12.8, 10)
+    context.move_to(3.5, 12.5)
+    context.line_to(3.5, 14.5)
+    context.line_to(8, 14.5)
+    context.stroke()
+
+
 def icon_thermometer(canvas, color):
     context = _stroke(canvas, color)
     context.arc(8, 11.6, 3.1, -1.1, math.pi + 1.1)
@@ -456,6 +474,26 @@ class CpuCard(Card):
         for index, value in enumerate(threads):
             canvas.bar(PADDING + index * (width + gap), 146, width, 6, value / 100)
         canvas.text(PADDING, 166, f"{len(threads)} threads", 10.5, FAINT)
+
+
+class GpuCard(Card):
+    height = 132
+
+    def paint(self, canvas, metrics):
+        self.header(canvas, "GPU", icon_gpu, metrics.gpu_name)
+        center_x, center_y = PADDING + 41, 88
+        canvas.ring(center_x, center_y, 37, 7, metrics.gpu_percent / 100)
+        canvas.text(center_x, center_y + 7, f"{metrics.gpu_percent:.0f}%", 21, TEXT, FONT_STRONG, "center")
+        canvas.text(center_x, center_y + 34, "em uso", 10.5, MUTED, align="center")
+
+        left = PADDING + 98
+        width = WIDTH - PADDING - left
+        canvas.spark(left, 46, width, 50, metrics.gpu_history, 100, canvas.theme.primary)
+        if metrics.gpu_frequency:
+            canvas.text(left, 116, f"{decimal(metrics.gpu_frequency)} GHz", 13, TEXT, FONT_STRONG)
+        if metrics.gpu_max_frequency:
+            canvas.text(WIDTH - PADDING, 116, f"máx. {decimal(metrics.gpu_max_frequency)} GHz", 11.5, MUTED,
+                        align="right")
 
 
 class TemperatureCard(Card):

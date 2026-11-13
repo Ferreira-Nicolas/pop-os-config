@@ -1,13 +1,16 @@
-# Crepúsculo Desktop
+# Pop OS Config
 
 Visual completo para o COSMIC (Pop!_OS), com as cores do wallpaper: roxo das nuvens,
 vermelho do banco do trem e vidro ameixa.
 
 - **Widgets de vidro** no fundo da tela, atrás das janelas e sem receber cliques:
-  relógio, bateria, volume, brilho, rede, CPU, temperatura, memória, disco e processos.
-- **Painel superior** com música ou vídeo tocando, barras que acompanham o som,
-  CPU, memória, temperatura e rede. Sem os ícones de teclado e acessibilidade, e com
-  a porcentagem da bateria.
+  relógio, bateria, volume, brilho, rede, CPU, GPU, temperatura, memória, disco e processos.
+- **Painel superior** com música ou vídeo tocando, capa do álbum, barras que acompanham
+  o som e um pop-up ao passar o mouse, com álbum, tempo, barra clicável, aleatório, repetir,
+  pausar e passar música, e o volume só do player, sem mexer no resto do som (arrastar,
+  clicar no alto-falante para silenciar ou usar a rodinha do mouse). Ao lado: CPU,
+  memória, temperatura e rede. Sem os ícones de teclado e acessibilidade, e com a
+  porcentagem da bateria.
 - **Tema do sistema** para janelas, menus e lançador, além de painel e Dock de vidro.
 - **Wallpaper** e **cores do VS Code**.
 
@@ -16,8 +19,8 @@ vermelho do banco do trem e vidro ameixa.
 Requer o COSMIC atualizado, com sessão gráfica aberta:
 
 ```bash
-git clone URL_DO_REPOSITORIO crepusculo-desktop
-cd crepusculo-desktop
+git clone https://github.com/Ferreira-Nicolas/pop-os-config.git
+cd pop-os-config
 ./install.sh
 ```
 
@@ -57,10 +60,13 @@ instalador de novo. A lista de cartões de cada coluna está em
 
 - Uma tela externa recebe o painel completo, e a do notebook, um resumo. Com uma tela
   só, ela recebe o painel completo.
-- A coluna direita tem cerca de 850 px de altura: em telas menores que 1080p ela é
+- A coluna direita tem cerca de 1000 px de altura: em telas menores que 1080p ela é
   cortada. Remova cartões em `right_column`, no `app.py`.
-- Sem bateria, o cartão de bateria não aparece.
+- O uso da GPU vem do kernel em Intel e AMD, e do `nvidia-smi` em NVIDIA. Sem nenhuma
+  dessas leituras, o cartão não aparece. Em Intel, o número é o tempo que ela passou
+  acordada: pode ficar acima do trabalho real, porque desenhar a tela já a mantém ativa.
 - A temperatura lê processadores Intel e AMD. Placas de vídeo dedicadas não aparecem.
+- Sem bateria, o cartão de bateria não aparece.
 - O alerta de temperatura usa 85 °C. Para mudar, crie
   `~/.config/thinkpad-monitor/temperature.conf` com `TEMPERATURE_LIMIT_C=75`.
 - Se o `settings.json` do VS Code tiver comentários, o instalador não mexe nele. Cole
@@ -83,6 +89,10 @@ perfil da placa, que se escolhe com `pactl set-card-profile`.
 **Algum player não aparece.** Só players compatíveis com MPRIS são listados. Teste com
 `playerctl --all-players metadata`.
 
+**A capa não aparece.** Ela depende do player informar uma imagem. Teste com
+`playerctl metadata mpris:artUrl`. Apps em Flatpak podem informar um arquivo que só
+existe dentro do sandbox deles.
+
 **As barras ficam paradas.** Elas acompanham a saída onde o áudio toca e checam isso a
 cada 2 segundos. Se continuarem paradas, confirme que há som saindo em Configurações > Som.
 
@@ -95,17 +105,21 @@ em X11. Por isso os widgets são um programa em Python que fala direto com o com
 | --- | --- |
 | [`wayland.py`](thinkpad_widgets/wayland.py) | Protocolo Wayland: camadas, blur e input vazio |
 | [`metrics.py`](thinkpad_widgets/metrics.py) | Leitura de sensores, bateria, rede e processos |
+| [`gpu.py`](thinkpad_widgets/gpu.py) | Uso da GPU em Intel, AMD e NVIDIA |
 | [`media.py`](thinkpad_widgets/media.py) | Música tocando e análise do som |
 | [`cards.py`](thinkpad_widgets/cards.py) | Desenho dos cartões |
 | [`bar.py`](thinkpad_widgets/bar.py) | Faixas do painel |
+| [`popup.py`](thinkpad_widgets/popup.py) | Pop-up de música |
+| [`volume.py`](thinkpad_widgets/volume.py) | Volume do player tocando, no fluxo de áudio dele |
 | [`theme.py`](thinkpad_widgets/theme.py) | Cores |
 | [`setup/desktop.py`](setup/desktop.py) | Aplica e desfaz as mudanças no desktop |
 
-Consumo medido: 30 MB de RAM e 2% de um núcleo em repouso, e 5% enquanto algo toca. O
-áudio só é capturado durante a reprodução, sempre da saída e nunca do microfone. Bordas
+Consumo medido: 50 MB de RAM e 2% de um núcleo em repouso, e 5% enquanto algo toca. O
+áudio só é capturado durante a reprodução, sempre da saída e nunca do microfone. A capa é
+baixada do endereço informado pelo player, uma vez por música. Bordas
 de alto contraste aparecem suavemente atrás do vidro porque o raio do blur é fixo no
-compositor. As faixas do painel não são applets: ficam por cima dele e não recebem
-cliques.
+compositor. As faixas do painel não são applets: ficam por cima dele. Só a faixa de música
+e o pop-up recebem o mouse; os cartões e a faixa de sistema deixam os cliques atravessarem.
 
 Os nomes `thinkpad-widgets` e `thinkpad-monitor` vêm do projeto original. Eles foram
 mantidos para que a instalação existente seja atualizada em vez de duplicada.

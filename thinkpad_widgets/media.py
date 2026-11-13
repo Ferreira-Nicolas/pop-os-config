@@ -6,6 +6,20 @@ import math
 import os
 import re
 import subprocess
+import threading
+import time
+import urllib.parse
+import urllib.request
+
+import cairo
+
+try:
+    import gi
+
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+except (ImportError, ValueError):
+    GdkPixbuf = None  # sem a biblioteca, a faixa só não mostra a capa
 
 SAMPLE_RATE = 8000
 BLOCK_SAMPLES = 256  # potência de 2, exigida pela FFT: 32 ms de áudio
@@ -17,7 +31,19 @@ PEAK_DECAY = 0.995  # ganho automático: música baixa também movimenta as barr
 SILENCE_FLOOR = 40.0
 TREBLE_TILT = 0.15
 RANGE_DB = 42  # o que está 42 dB abaixo do pico já aparece como barra vazia
-FORMAT = "{{status}}\t{{playerName}}\t{{artist}}\t{{title}}"
+FORMAT = ("{{status}}\t{{playerInstance}}\t{{artist}}\t{{title}}\t{{mpris:artUrl}}\t{{album}}"
+          "\t{{mpris:length}}\t{{position}}\t{{shuffle}}\t{{loop}}")
+# O primeiro clique repete a música atual, que é o uso mais comum.
+NEXT_LOOP = {"None": "Track", "Track": "Playlist", "Playlist": "None"}
+COMMANDS = {
+    "play-pause": ("play-pause",),
+    "next": ("next",),
+    "previous": ("previous",),
+    "shuffle": ("shuffle", "Toggle"),
+}
+ART_PIXELS = 152  # o dobro do tamanho no pop-up, para ficar nítida com escala
+ART_MAX_BYTES = 5 * 1024 * 1024
+ART_TIMEOUT_SECONDS = 5
 
 
 def clean_artist(artist):
@@ -25,15 +51,37 @@ def clean_artist(artist):
     return artist.removesuffix(" - Topic")
 
 
+def microseconds(text):
+    """O player informa tempo em microssegundos, ou nada."""
+    try:
+        return int(text) / 1_000_000
+    except ValueError:
+        return 0.0
+
+
+def parse_shuffle(text):
+    """Devolve None quando o player não tem modo aleatório."""
+    return {"true": True, "false": False}.get(text.lower())
+
+
+def parse_loop(text):
+    """Devolve None quando o player não tem repetição."""
+    return text if text in NEXT_LOOP else None
+
+
 def parse_players(output):
     """Escolhe o player que está tocando, ou o primeiro pausado."""
     players = []
     for line in output.splitlines():
-        fields = line.split("\t")
-        if len(fields) == 4 and fields[3].strip():
-            status, player, artist, title = (field.strip() for field in fields)
+        fields = [field.strip() for field in line.split("\t")]
+        fields += [""] * (10 - len(fields))
+        status, player, artist, title, art, album, length, position, shuffle, loop = fields[:10]
+        if title:
             players.append({"playing": status == "Playing", "paused": status == "Paused",
-                            "player": player, "artist": clean_artist(artist), "title": title})
+                            "player": player, "artist": clean_artist(artist), "title": title,
+                            "art": art, "album": album, "length": microseconds(length),
+                            "position": microseconds(position), "shuffle": parse_shuffle(shuffle),
+                            "loop": parse_loop(loop)})
     return next((p for p in players if p["playing"]), next((p for p in players if p["paused"]), None))
 
 
@@ -191,9 +239,72 @@ class AudioCapture:
         return True
 
 
+def read_art(url):
+    """Lê a capa de um arquivo local ou da internet. O link vem do player."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme == "file":
+        with open(urllib.parse.unquote(parsed.path), "rb") as image:
+            return image.read(ART_MAX_BYTES + 1)
+    if parsed.scheme in ("http", "https"):
+        with urllib.request.urlopen(url, timeout=ART_TIMEOUT_SECONDS) as response:
+            return response.read(ART_MAX_BYTES + 1)
+    raise ValueError(f"esquema não aceito: {parsed.scheme}")
+
+
+def art_surface(data):
+    """Converte a imagem em uma superfície quadrada do Cairo, cortando pelo centro."""
+    loader = GdkPixbuf.PixbufLoader()
+    loader.write(data)
+    loader.close()
+    image = loader.get_pixbuf()
+    side = min(image.get_width(), image.get_height())
+    image = image.new_subpixbuf((image.get_width() - side) // 2, (image.get_height() - side) // 2,
+                                side, side)
+    image = image.scale_simple(ART_PIXELS, ART_PIXELS, GdkPixbuf.InterpType.BILINEAR).add_alpha(False, 0, 0, 0)
+
+    # O GdkPixbuf entrega RGBA e o Cairo guarda BGRA. Capas são opacas: alfa cheio.
+    pixels = image.get_pixels()
+    data = bytearray(len(pixels))
+    data[0::4] = pixels[2::4]
+    data[1::4] = pixels[1::4]
+    data[2::4] = pixels[0::4]
+    data[3::4] = b"\xff" * (len(pixels) // 4)
+    return cairo.ImageSurface.create_for_data(data, cairo.FORMAT_ARGB32, ART_PIXELS, ART_PIXELS,
+                                              image.get_rowstride())
+
+
+class AlbumArt:
+    """Carrega a capa em segundo plano: a animação nunca espera a rede."""
+
+    def __init__(self):
+        self.url = ""
+        self.surface = None
+
+    def request(self, url):
+        if url == self.url:
+            return
+        self.url = url
+        self.surface = None
+        if url and GdkPixbuf:
+            threading.Thread(target=self._load, args=(url,), daemon=True).start()
+
+    def _load(self, url):
+        try:
+            data = read_art(url)
+            if len(data) > ART_MAX_BYTES:
+                return
+            surface = art_surface(data)
+        except (OSError, ValueError, gi.repository.GLib.Error):
+            return  # sem capa, a faixa continua só com o texto
+        if url == self.url:  # a música pode ter mudado enquanto baixava
+            self.surface = surface
+
+
 class Media:
     def __init__(self):
         self.current = None
+        self.sampled_at = 0.0
+        self.art = AlbumArt()
 
     def sample(self):
         try:
@@ -202,9 +313,53 @@ class Media:
                 capture_output=True, text=True, timeout=1,
             )
             self.current = parse_players(result.stdout)
+            self.sampled_at = time.monotonic()
         except (OSError, subprocess.SubprocessError):
             self.current = None
+        self.art.request(self.current["art"] if self.current else "")
 
     @property
     def playing(self):
         return bool(self.current and self.current["playing"])
+
+    @property
+    def position(self):
+        """Posição atual, avançando entre uma leitura e outra."""
+        if self.current is None:
+            return 0.0
+        position = self.current["position"]
+        if self.current["playing"]:
+            position += time.monotonic() - self.sampled_at
+        length = self.current["length"]
+        return min(position, length) if length else position
+
+    def control(self, action):
+        """Envia o comando em segundo plano, com resposta imediata na tela."""
+        if self.current is None:
+            return
+        if action == "repeat" and self.current["loop"] is not None:
+            self.current["loop"] = NEXT_LOOP[self.current["loop"]]
+            self._send("loop", self.current["loop"])
+            return
+        if action not in COMMANDS:
+            return
+        if action == "play-pause":
+            self.current["position"] = self.position
+            self.sampled_at = time.monotonic()
+            self.current["playing"] = not self.current["playing"]
+        elif action == "shuffle" and self.current["shuffle"] is not None:
+            self.current["shuffle"] = not self.current["shuffle"]
+        self._send(*COMMANDS[action])
+
+    def seek(self, seconds):
+        """Pula para um ponto da música."""
+        if self.current is None:
+            return
+        self.current["position"] = seconds
+        self.sampled_at = time.monotonic()
+        self._send("position", f"{seconds:.2f}")
+
+    def _send(self, *arguments):
+        command = ["playerctl", f"--player={self.current['player']}", *arguments]
+        threading.Thread(target=subprocess.run, args=(command,), daemon=True,
+                         kwargs={"capture_output": True, "timeout": 3}).start()

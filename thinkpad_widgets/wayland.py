@@ -3,7 +3,8 @@
 Implementa só o necessário para um widget de fundo de tela:
 
 * zwlr_layer_shell_v1: a superfície fica na camada atrás das janelas;
-* região de input vazia: cliques atravessam, nada é arrastável;
+* região de input vazia: cliques atravessam, nada é arrastável (só a faixa de
+  música e o pop-up dela recebem o mouse);
 * ext_background_effect_v1: o compositor desfoca o que está atrás (blur real).
 
 As bibliotecas prontas (GTK, gtk-layer-shell) não expõem esse protocolo de blur
@@ -23,6 +24,12 @@ import cairo
 LAYER_BACKGROUND, LAYER_BOTTOM, LAYER_TOP, LAYER_OVERLAY = range(4)
 ANCHOR_TOP, ANCHOR_BOTTOM, ANCHOR_LEFT, ANCHOR_RIGHT = 1, 2, 4, 8
 SHM_FORMAT_ARGB8888 = 0
+SEAT_POINTER = 1
+BUTTON_LEFT = 0x110
+BUTTON_PRESSED = 1
+AXIS_VERTICAL = 0
+CURSOR_DEFAULT = 1
+CURSOR_HAND = 4
 BLUR_CAPABILITY = 1
 
 # Eventos que nos interessam: interface -> opcode -> (nome, assinatura).
@@ -39,6 +46,14 @@ EVENTS = {
         3: ("scale", "i"),
         4: ("name", "s"),
         5: ("description", "s"),
+    },
+    "wl_seat": {0: ("capabilities", "u")},
+    "wl_pointer": {
+        0: ("enter", "uoff"),
+        1: ("leave", "uo"),
+        2: ("motion", "uff"),
+        3: ("button", "uuuu"),
+        4: ("axis", "uuf"),
     },
     "zxdg_output_v1": {1: ("logical_size", "ii")},
     "zwlr_layer_surface_v1": {0: ("configure", "uuu"), 1: ("closed", "")},
@@ -153,6 +168,9 @@ class Connection:
             elif kind in "uo":
                 values.append(struct.unpack_from("=I", data, offset)[0])
                 offset += 4
+            elif kind == "f":
+                values.append(struct.unpack_from("=i", data, offset)[0] / 256)
+                offset += 4
             elif kind == "s":
                 size = struct.unpack_from("=I", data, offset)[0]
                 offset += 4
@@ -238,6 +256,66 @@ class Output:
         return self.logical_width or self.width // max(self.scale, 1)
 
 
+class Pointer:
+    """O mouse. Só chega às superfícies com região de input."""
+
+    def __init__(self, connection):
+        self.connection = connection
+        self.focus = None
+        self.serial = 0
+        self.on_enter = self.on_leave = self.on_motion = None
+        self.on_press = self.on_release = self.on_scroll = None
+        self.pointer = None
+        self.cursor = None
+        self.seat = connection.bind("wl_seat", 5)
+        self.seat.on("capabilities", self._on_capabilities)
+
+    def _on_capabilities(self, capabilities):
+        if capabilities & SEAT_POINTER and self.pointer is None:
+            self.pointer = self.connection.new_object("wl_pointer")
+            self.seat.request(0, "n", self.pointer)
+            self.pointer.on("enter", self._on_enter)
+            self.pointer.on("leave", self._on_leave)
+            self.pointer.on("motion", self._on_motion)
+            self.pointer.on("button", self._on_button)
+            self.pointer.on("axis", self._on_axis)
+            if self.connection.has("wp_cursor_shape_manager_v1"):
+                manager = self.connection.bind("wp_cursor_shape_manager_v1", 1)
+                self.cursor = self.connection.new_object("wp_cursor_shape_device_v1")
+                manager.request(1, "no", self.cursor, self.pointer)
+
+    def set_cursor(self, shape):
+        if self.cursor:
+            self.cursor.request(1, "uu", self.serial, shape)
+
+    def _on_enter(self, serial, surface, x, y):
+        self.serial = serial
+        self.focus = surface
+        self.set_cursor(CURSOR_DEFAULT)
+        if self.on_enter:
+            self.on_enter(surface, x, y)
+
+    def _on_leave(self, _serial, surface):
+        self.focus = None
+        if self.on_leave:
+            self.on_leave(surface)
+
+    def _on_motion(self, _time, x, y):
+        if self.on_motion:
+            self.on_motion(self.focus, x, y)
+
+    def _on_button(self, _serial, _time, button, state):
+        if button != BUTTON_LEFT:
+            return
+        handler = self.on_press if state == BUTTON_PRESSED else self.on_release
+        if handler:
+            handler(self.focus)
+
+    def _on_axis(self, _time, axis, value):
+        if axis == AXIS_VERTICAL and self.on_scroll:
+            self.on_scroll(self.focus, value)
+
+
 class Globals:
     """Os objetos globais usados por todas as superfícies."""
 
@@ -248,6 +326,7 @@ class Globals:
         self.layer_shell = connection.bind("zwlr_layer_shell_v1", 4)
         self.blur_supported = False
         self.effects = None
+        self.pointer = Pointer(connection) if connection.has("wl_seat") else None
         if connection.has("ext_background_effect_manager_v1"):
             self.effects = connection.bind("ext_background_effect_manager_v1", 1)
             self.effects.on("capabilities", self._on_capabilities)
@@ -264,12 +343,14 @@ class Globals:
     def _on_capabilities(self, flags):
         self.blur_supported = bool(flags & BLUR_CAPABILITY)
 
-    def region(self, rectangles):
+    def use_region(self, rectangles, target, opcode):
+        """Aplica uma região e a destrói: o compositor guarda uma cópia."""
         region = self.connection.new_object("wl_region")
         self.compositor.request(1, "n", region)
         for x, y, width, height in rectangles:
             region.request(1, "iiii", x, y, width, height)
-        return region
+        target.request(opcode, "o", region)
+        region.request(0)
 
 
 class Buffer:
@@ -291,13 +372,14 @@ class LayerSurface:
     """Uma superfície de tamanho fixo, atrás das janelas e sem input."""
 
     def __init__(self, shared, output, width, height, anchor, margins, layer, namespace,
-                 blur_rectangles, on_closed):
+                 blur_rectangles, on_closed, interactive=False):
         self.shared = shared
         self.connection = shared.connection
         self.width, self.height = width, height
         self.scale = max(output.scale, 1)
         self.configured = False
         self.frame_pending = False
+        self.effect = None
         self.on_closed = on_closed
 
         self.surface = self.connection.new_object("wl_surface")
@@ -315,17 +397,34 @@ class LayerSurface:
         self.layer_surface.request(4, "u", 0)  # nunca recebe teclado
 
         # Região vazia: o ponteiro atravessa a superfície inteira.
-        self.surface.request(5, "o", shared.region([]))
+        if not interactive:
+            shared.use_region([], self.surface, 5)
         self.surface.request(8, "i", self.scale)
 
         if shared.blur_supported and blur_rectangles:
             effect = self.connection.new_object("ext_background_effect_surface_v1")
             shared.effects.request(1, "no", effect, self.surface)
-            effect.request(1, "o", shared.region(blur_rectangles))
+            shared.use_region(blur_rectangles, effect, 1)
             self.effect = effect
 
         self._allocate()
         self.surface.request(6)
+
+    def set_input(self, rectangles):
+        """Troca a área que recebe o mouse; vale no próximo desenho."""
+        self.shared.use_region(rectangles, self.surface, 5)
+
+    def destroy(self):
+        if self.effect:
+            self.effect.request(0)
+        self.layer_surface.request(7)
+        for buffer in self.buffers:
+            buffer.proxy.request(0)
+            buffer.surface.finish()
+        self.surface.request(0)
+        # Sem isto, cada abertura do pop-up deixaria seus buffers para trás.
+        self.buffers = []
+        self.memory = None
 
     def _allocate(self):
         pixel_width, pixel_height = self.width * self.scale, self.height * self.scale

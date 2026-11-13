@@ -1,7 +1,8 @@
 """Faixas desenhadas sobre o espaço livre do painel do COSMIC.
 
-Não são applets: ficam na mesma camada, acima do painel, com input vazio, então
-cliques atravessam. Applets de verdade exigiriam Rust e a libcosmic.
+Não são applets: ficam na mesma camada, acima do painel. Applets de verdade
+exigiriam Rust e a libcosmic. Só a faixa de música recebe o mouse, para abrir o
+pop-up; na faixa de sistema os cliques atravessam.
 """
 
 import cairo
@@ -19,12 +20,28 @@ BAR_WIDTH = 4
 BAR_GAP = 3
 BAR_MAX_HEIGHT = 18
 TEXT_SIZE = 12.5
+ART_SIZE = 24
+ART_RADIUS = 5
+ART_GAP = 8
 
 
 def track_text(track):
     if track["artist"]:
         return f"{track['title']}  ·  {track['artist']}"
     return track["title"]
+
+
+def draw_art(canvas, surface, x, y, size, radius, alpha):
+    context = canvas.context
+    context.save()
+    canvas.rounded(x, y, size, size, radius)
+    context.clip()
+    context.translate(x, y)
+    scale = size / surface.get_width()
+    context.scale(scale, scale)
+    context.set_source_surface(surface, 0, 0)
+    context.paint_with_alpha(alpha)
+    context.restore()
 
 
 class MediaStrip:
@@ -55,8 +72,13 @@ class MediaStrip:
             context.fill()
 
         alpha = cards.TEXT if track["playing"] else cards.MUTED
-        text = canvas.fitted(track_text(track), left - 14, TEXT_SIZE)
-        canvas.text(left - 10, 21, text, TEXT_SIZE, alpha, align="right")
+        art = self.media.art.surface
+        reserved = ART_SIZE + ART_GAP if art else 0
+        text = canvas.fitted(track_text(track), left - 14 - reserved, TEXT_SIZE)
+        advance = canvas.text(left - 10, 21, text, TEXT_SIZE, alpha, align="right")
+        if art:
+            draw_art(canvas, art, left - 10 - advance - reserved, (HEIGHT - ART_SIZE) / 2,
+                     ART_SIZE, ART_RADIUS, alpha)
 
 
 class StatusStrip:

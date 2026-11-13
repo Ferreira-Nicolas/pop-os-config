@@ -17,6 +17,7 @@ fi
 missing=()
 python3 -c 'import cairo' 2>/dev/null || missing+=(python3-cairo)
 python3 -c 'import psutil' 2>/dev/null || missing+=(python3-psutil)
+python3 -c "import gi; gi.require_version('GdkPixbuf', '2.0')" 2>/dev/null || missing+=(python3-gi gir1.2-gdkpixbuf-2.0)
 command -v playerctl >/dev/null || missing+=(playerctl)
 command -v parec >/dev/null || missing+=(pulseaudio-utils)
 command -v wpctl >/dev/null || missing+=(wireplumber)
