@@ -1,1 +1,7 @@
 __pycache__/
+# Dados de conexão e VPN nunca vão para o repositório.
+rdp-pd.conf
+*.ovpn
+*.p12
+*.key
+login.txt

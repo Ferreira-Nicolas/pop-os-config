@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# rdp-pd: liga a VPN (se precisar) e abre a máquina remota em todas as telas.
+#
+#   rdp-pd              conecta
+#   rdp-pd --restaurar  devolve o Alt+Tab ao COSMIC (se o PC desligou no meio da sessão)
+#
+# Atalhos dentro da sessão (Ctrl e Super da esquerda):
+#   Ctrl+Super+Q      minimiza as duas telas
+#   Ctrl+Super+D      desconecta
+#   Ctrl+Super+Enter  entra/sai da tela cheia
+set -u
+
+# Os dados da conexão ficam fora do repositório, em um arquivo só seu.
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/rdp-pd/rdp-pd.conf"
+if [ ! -f "$CONFIG" ]; then
+    echo "Falta a configuração em $CONFIG." >&2
+    echo "Copie rdp/rdp-pd.conf.example do projeto para lá e preencha." >&2
+    exit 1
+fi
+SERVIDOR="" USUARIO="" DOMINIO="" CERT_SHA256="" VPN_DIR="" VPN_CONFIG=""
+# shellcheck source=/dev/null
+. "$CONFIG"
+if [ -z "$SERVIDOR" ] || [ -z "$USUARIO" ]; then
+    echo "Preencha pelo menos SERVIDOR e USUARIO em $CONFIG." >&2
+    exit 1
+fi
+
+APP=com.freerdp.FreeRDP
+CONFIG_SDL="$HOME/.var/app/$APP/config/freerdp/sdl-freerdp.json"
+ATALHOS="$HOME/.config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"
+ESTADO="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/rdp-pd"
+export DISPLAY="${DISPLAY:-:1}"
+
+LINHA_ALT='    (modifiers: [Alt], key: "Tab"): Disable,'
+LINHA_ALT_SHIFT='    (modifiers: [Alt, Shift], key: "Tab"): Disable,'
+
+vpn_iniciada=0
+vigia=""
+
+porta_aberta() {
+    timeout 2 bash -c "</dev/tcp/$SERVIDOR/3389" 2>/dev/null
+}
+
+# O Alt+Tab só chega ao Windows com o atalho do COSMIC desligado. O Super+Tab
+# continua local de propósito, como saída de emergência.
+alt_tab_para_o_windows() {
+    mkdir -p "$(dirname "$ATALHOS")"
+    grep -qF "$LINHA_ALT" "$ATALHOS" 2>/dev/null && return
+    grep -q '(' "$ATALHOS" 2>/dev/null || printf '{\n}\n' > "$ATALHOS"
+    local tmp
+    tmp=$(mktemp "$ATALHOS.XXXXXX")
+    { head -n 1 "$ATALHOS"
+      printf '%s\n%s\n' "$LINHA_ALT" "$LINHA_ALT_SHIFT"
+      tail -n +2 "$ATALHOS"; } > "$tmp"
+    mv "$tmp" "$ATALHOS"
+}
+
+alt_tab_para_o_cosmic() {
+    [ -f "$ATALHOS" ] || return 0
+    grep -qF "$LINHA_ALT" "$ATALHOS" || return 0
+    local tmp
+    tmp=$(mktemp "$ATALHOS.XXXXXX")
+    grep -vF -e "$LINHA_ALT" -e "$LINHA_ALT_SHIFT" "$ATALHOS" > "$tmp"
+    if grep -q '(' "$tmp"; then
+        mv "$tmp" "$ATALHOS"
+    else
+        rm -f "$tmp" "$ATALHOS"
+    fi
+}
+
+sessao_em_foco() {
+    local id estado
+    for id in $(xwininfo -root -tree 2>/dev/null | awk '/"sdl-freerdp"/ {print $1}'); do
+        estado=$(xprop -id "$id" _NET_WM_STATE 2>/dev/null)
+        case "$estado" in
+            *_NET_WM_STATE_FOCUSED*) case "$estado" in *_NET_WM_STATE_FULLSCREEN*) return 0 ;; esac ;;
+        esac
+    done
+    return 1
+}
+
+vigiar_foco() {
+    local no_windows=0
+    while kill -0 "$1" 2>/dev/null; do
+        if sessao_em_foco; then
+            [ "$no_windows" = 1 ] || { alt_tab_para_o_windows; no_windows=1; }
+        else
+            [ "$no_windows" = 0 ] || { alt_tab_para_o_cosmic; no_windows=0; }
+        fi
+        sleep 0.4
+    done
+}
+
+ligar_vpn() {
+    if porta_aberta; then
+        [ -n "$VPN_CONFIG" ] && echo "VPN já está ligada."
+        return
+    fi
+    if [ -z "$VPN_CONFIG" ]; then
+        echo "$SERVIDOR não responde na porta 3389, e não há VPN configurada." >&2
+        exit 1
+    fi
+    echo "Ligando a VPN (o sudo pode pedir sua senha)..."
+    sudo -v || exit 1
+    : > "$ESTADO/vpn.log"
+    sudo openvpn --cd "$VPN_DIR" --providers legacy default --config "$VPN_CONFIG" \
+        --daemon rdp-pd --log "$ESTADO/vpn.log" --writepid "$ESTADO/vpn.pid" \
+        --management "$ESTADO/vpn.sock" unix --management-client-user "$USER" || {
+        echo "Não consegui iniciar o OpenVPN." >&2
+        exit 1
+    }
+    vpn_iniciada=1
+    local i
+    for i in $(seq 1 30); do
+        porta_aberta && { echo "VPN conectada."; return; }
+        sleep 1
+    done
+    echo "A VPN não chegou até $SERVIDOR. Últimas linhas do log:" >&2
+    tail -n 8 "$ESTADO/vpn.log" >&2
+    exit 1
+}
+
+desligar_vpn() {
+    [ "$vpn_iniciada" = 1 ] || return 0
+    echo "Desligando a VPN..."
+    printf 'signal SIGTERM\n' | socat - "UNIX-CONNECT:$ESTADO/vpn.sock" >/dev/null 2>&1 && return
+    [ -f "$ESTADO/vpn.pid" ] && sudo kill "$(cat "$ESTADO/vpn.pid")"
+}
+
+encerrar() {
+    trap - EXIT INT TERM HUP
+    [ -n "$vigia" ] && kill "$vigia" 2>/dev/null
+    [ -n "${rdp:-}" ] && kill "$rdp" 2>/dev/null
+    alt_tab_para_o_cosmic
+    desligar_vpn
+}
+
+if [ "${1:-}" = "--restaurar" ]; then
+    alt_tab_para_o_cosmic
+    echo "Alt+Tab devolvido ao COSMIC."
+    exit 0
+fi
+
+if pgrep -x sdl-freerdp >/dev/null; then
+    echo "Já existe uma sessão aberta." >&2
+    exit 1
+fi
+
+mkdir -p "$ESTADO"
+chmod 700 "$ESTADO"
+alt_tab_para_o_cosmic   # limpa o que uma sessão interrompida tenha deixado
+
+if [ ! -f "$CONFIG_SDL" ]; then
+    mkdir -p "$(dirname "$CONFIG_SDL")"
+    cat > "$CONFIG_SDL" <<'JSON'
+{
+    "SDL_KeyModMask": ["KMOD_LCTRL", "KMOD_LGUI"],
+    "SDL_Minimize": "SDL_SCANCODE_Q"
+}
+JSON
+fi
+
+trap encerrar EXIT
+trap 'exit 130' INT TERM HUP
+
+ligar_vpn
+
+echo "Abrindo as duas telas. Ctrl+Super+Q minimiza, Ctrl+Super+D desconecta."
+flatpak run --env=SDL_VIDEO_DRIVER=x11 "$APP" \
+    "/v:$SERVIDOR" "/u:$USUARIO" \
+    /multimon /sound /clipboard /network:auto \
+    ${DOMINIO:+"/d:$DOMINIO"} \
+    ${CERT_SHA256:+"/cert:fingerprint:sha256:$CERT_SHA256"} \
+    /log-level:INFO > "$ESTADO/rdp.log" 2>&1 &
+rdp=$!
+
+vigiar_foco "$rdp" &
+vigia=$!
+
+wait "$rdp"
+echo "Sessão encerrada."

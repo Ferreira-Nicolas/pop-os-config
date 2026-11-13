@@ -13,6 +13,7 @@ vermelho do banco do trem e vidro ameixa.
   porcentagem da bateria.
 - **Tema do sistema** para janelas, menus e lançador, além de painel e Dock de vidro.
 - **Wallpaper** e **cores do VS Code**.
+- **Acesso remoto** a um Windows em todas as telas, com o comando `rdp-pd`.
 
 ## Instalar
 
@@ -71,6 +72,28 @@ instalador de novo. A lista de cartões de cada coluna está em
   `~/.config/thinkpad-monitor/temperature.conf` com `TEMPERATURE_LIMIT_C=75`.
 - Se o `settings.json` do VS Code tiver comentários, o instalador não mexe nele. Cole
   as cores de `config/vscode-colors.json` manualmente.
+
+## Acesso remoto (RDP em todas as telas)
+
+O comando `rdp-pd` liga a VPN, se precisar, e abre um Windows remoto com uma janela por
+monitor. Ele usa o FreeRDP em Flatpak, porque o Remmina não faz multimonitor no COSMIC.
+
+```bash
+flatpak install flathub com.freerdp.FreeRDP
+sudo apt install openvpn socat x11-utils
+mkdir -p ~/.config/rdp-pd
+cp rdp/rdp-pd.conf.example ~/.config/rdp-pd/rdp-pd.conf
+chmod 600 ~/.config/rdp-pd/rdp-pd.conf
+```
+
+Preencha servidor, usuário e VPN no `rdp-pd.conf` e copie os arquivos da VPN para a
+pasta indicada nele. Nada disso entra no repositório: os dados de conexão e os arquivos
+da VPN ficam só no seu computador. A senha é pedida a cada conexão.
+
+Dentro da sessão: **Ctrl+Super+Q** minimiza, **Ctrl+Super+D** desconecta e
+**Ctrl+Super+Enter** entra e sai da tela cheia. O Alt+Tab vai para o Windows enquanto
+a sessão está em foco; o Super+Tab continua no COSMIC. Se o PC desligar no meio da
+sessão e o Alt+Tab não voltar, rode `rdp-pd --restaurar`.
 
 ## Problemas comuns
 

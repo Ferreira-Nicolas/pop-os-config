@@ -19,4 +19,6 @@ if [[ -e "$THEME_BACKUP" ]]; then
 fi
 
 rm -rf "$SHARE_DIR"
+rm -f "$HOME/.local/bin/rdp-pd"
 echo "Desinstalado. Suas cores e backups continuam em $CONFIG_DIR."
+echo "A configuração do rdp-pd continua em ${XDG_CONFIG_HOME:-$HOME/.config}/rdp-pd."

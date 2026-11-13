@@ -1,0 +1,14 @@
+# Configuração do rdp-pd. Copie para ~/.config/rdp-pd/rdp-pd.conf e preencha.
+# Este arquivo fica só no seu computador: não coloque a cópia preenchida no git.
+
+# Máquina remota e login. A senha é pedida pelo FreeRDP na hora de conectar.
+SERVIDOR=192.168.0.10
+USUARIO=seu.usuario
+DOMINIO=                # deixe vazio se não usar domínio
+
+# Impressão digital do certificado do Windows. Vazio: o FreeRDP pergunta ao conectar.
+CERT_SHA256=
+
+# VPN (OpenVPN). Deixe VPN_CONFIG vazio se a máquina já é alcançável sem VPN.
+VPN_DIR="$HOME/Documents/vpn"
+VPN_CONFIG=

@@ -8,6 +8,8 @@ readonly SHARE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/thinkpad-widgets"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/thinkpad-monitor"
 readonly UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 readonly THEME_BACKUP="$CONFIG_DIR/theme-backup/antes-do-crepusculo.ron"
+readonly BIN_DIR="$HOME/.local/bin"
+readonly RDP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/rdp-pd/rdp-pd.conf"
 
 if [[ "${XDG_CURRENT_DESKTOP:-}" != *COSMIC* ]]; then
     echo 'Este projeto precisa do desktop COSMIC, em uma sessão gráfica.' >&2
@@ -49,5 +51,22 @@ cosmic-settings appearance import "$PROJECT_DIR/config/crepusculo.ron"
 systemctl --user daemon-reload
 systemctl --user enable thinkpad-widgets.service
 systemctl --user restart thinkpad-widgets.service
+
+# Acesso remoto (opcional): o comando é instalado sempre; avisa o que faltar para usar.
+install -Dm755 "$PROJECT_DIR/rdp/rdp-pd" "$BIN_DIR/rdp-pd"
+rdp_missing=()
+flatpak info com.freerdp.FreeRDP >/dev/null 2>&1 || rdp_missing+=('flatpak install flathub com.freerdp.FreeRDP')
+rdp_packages=()
+command -v openvpn >/dev/null || rdp_packages+=(openvpn)
+command -v socat >/dev/null || rdp_packages+=(socat)
+command -v xprop >/dev/null || rdp_packages+=(x11-utils)
+(( ${#rdp_packages[@]} )) && rdp_missing+=("sudo apt install ${rdp_packages[*]}")
+if (( ${#rdp_missing[@]} )); then
+    echo 'Para usar o rdp-pd, falta instalar:'
+    printf '  %s\n' "${rdp_missing[@]}"
+fi
+if [[ ! -e "$RDP_CONFIG" ]]; then
+    echo "Para usar o rdp-pd, copie rdp/rdp-pd.conf.example para $RDP_CONFIG e preencha."
+fi
 
 echo 'Pronto. Para desfazer tudo: ./uninstall.sh'
